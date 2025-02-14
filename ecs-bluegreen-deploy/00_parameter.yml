@@ -1,0 +1,45 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: ecs-bluegreen-deploy - 00_parameter
+
+Parameters:
+  VpcId:
+    Type: String
+
+  PublicSubnet1:
+    Type: String
+
+  PublicSubnet2:
+    Type: String
+
+  PublicSubnet3:
+    Type: String
+
+Resources:
+  ParameterVpcId:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /ecs-bluegreen-deploy/VpcId
+      Type: String
+      Value: !Ref VpcId
+
+  ParameterPublicSubnet1:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /ecs-bluegreen-deploy/PublicSubnet1
+      Type: String
+      Value: !Ref PublicSubnet1
+
+  ParameterPublicSubnet2:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /ecs-bluegreen-deploy/PublicSubnet2
+      Type: String
+      Value: !Ref PublicSubnet2
+
+  ParameterPublicSubnet3:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /ecs-bluegreen-deploy/PublicSubnet3
+      Type: String
+      Value: !Ref PublicSubnet3

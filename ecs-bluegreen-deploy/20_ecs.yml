@@ -1,0 +1,232 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: ecs-bluegreen-deploy - 20_code_pipeline
+
+Parameters:
+  ECSAMI:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ecs/optimized-ami/amazon-linux-2023/recommended/image_id
+
+Resources:
+  # ---------------------------------------------------------------------------
+  # IAM Role
+  # ---------------------------------------------------------------------------  
+  IAMRoleEcsTask:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      RoleName: SampleEcsTaskRole
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      MaxSessionDuration: 3600
+      ManagedPolicyArns:
+        - !Ref IAMManagedPolicy
+
+  IAMManagedPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: sample-task-role-policy
+      Path: /
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Action:
+              - ssmmessages:CreateControlChannel
+              - ssmmessages:CreateDataChannel
+              - ssmmessages:OpenControlChannel
+              - ssmmessages:OpenDataChannel
+            Effect: Allow
+            Resource: '*'
+
+  IAMRoleEcsTaskExecution:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      RoleName: SampleEcsTaskExecutionRole
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      MaxSessionDuration: 3600
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  # ---------------------------------------------------------------------------
+  # ECS Cluster
+  # ---------------------------------------------------------------------------  
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: sample-ecs-cluster
+      CapacityProviders:
+        - !Ref ECSCapacityProvider
+      DefaultCapacityProviderStrategy:
+        - CapacityProvider: !Ref ECSCapacityProvider
+          Weight: 1
+          Base: 0
+
+  # ---------------------------------------------------------------------------
+  # ECS Service
+  # ---------------------------------------------------------------------------  
+  ECSService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: sample-ecs-service
+      Cluster: !GetAtt ECSCluster.Arn
+      LoadBalancers:
+        - TargetGroupArn: '{{resolve:ssm:/ecs-bluegreen-deploy/TargetGroupArn}}'
+          ContainerName: nginx
+          ContainerPort: 80
+      DesiredCount: 1
+      TaskDefinition: !GetAtt ECSTaskDefinition.TaskDefinitionArn
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 100
+      Role: !Sub arn:aws:iam::${AWS::AccountId}:role/aws-service-role/ecs.amazonaws.com/AWSServiceRoleForECS
+      HealthCheckGracePeriodSeconds: 60
+      SchedulingStrategy: REPLICA
+      DeploymentController:
+        Type: CODE_DEPLOY
+      CapacityProviderStrategy:
+        - CapacityProvider: !Ref ECSCapacityProvider
+          Weight: 100
+          Base: 1
+
+  ECSTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      ContainerDefinitions:
+        - Essential: true
+          Image: nginx:1.14
+          Name: nginx
+          PortMappings:
+            - ContainerPort: 80
+              HostPort: 0
+              Protocol: tcp
+      Family: sample-ecs-task
+      TaskRoleArn: !GetAtt IAMRoleEcsTask.Arn
+      ExecutionRoleArn: !GetAtt IAMRoleEcsTaskExecution.Arn
+      NetworkMode: bridge
+      RequiresCompatibilities:
+        - EC2
+      Cpu: "2048"
+      Memory: "3072"
+
+  ECSCapacityProvider:
+    Type: AWS::ECS::CapacityProvider
+    Properties:
+      Name: sample-capacity-provider
+      AutoScalingGroupProvider:
+        AutoScalingGroupArn: !Ref AutoScalingAutoScalingGroup
+        ManagedTerminationProtection: DISABLED
+        ManagedScaling:
+          MaximumScalingStepSize: 10000
+          MinimumScalingStepSize: 1
+          Status: ENABLED
+          TargetCapacity: 100
+
+  # ---------------------------------------------------------------------------
+  # ASG
+  # ---------------------------------------------------------------------------  
+  AutoScalingAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AutoScalingGroupName: sample-asg-ecs-cluster
+      LaunchTemplate:
+        LaunchTemplateId: !Ref EC2LaunchTemplate
+        Version: "1"
+      MinSize: 0
+      MaxSize: 5
+      DesiredCapacity: 2
+      Cooldown: 300
+      HealthCheckType: EC2
+      HealthCheckGracePeriod: 0
+      VPCZoneIdentifier:
+        - '{{resolve:ssm:/ecs-bluegreen-deploy/PublicSubnet1}}'
+        - '{{resolve:ssm:/ecs-bluegreen-deploy/PublicSubnet2}}'
+        - '{{resolve:ssm:/ecs-bluegreen-deploy/PublicSubnet3}}'
+      TerminationPolicies:
+        - Default
+      ServiceLinkedRoleARN: !Sub arn:aws:iam::${AWS::AccountId}:role/aws-service-role/autoscaling.amazonaws.com/AWSServiceRoleForAutoScaling
+      Tags:
+        - Key: AmazonECSManaged
+          Value: ""
+          PropagateAtLaunch: true
+        - Key: Name
+          Value: sample-asg-ecs-cluster
+          PropagateAtLaunch: true
+      NewInstancesProtectedFromScaleIn: false
+
+  EC2LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: sample-launch-template
+      LaunchTemplateData:
+        UserData: !Base64
+          Rain::Embed: userdata.sh
+        IamInstanceProfile:
+          Arn: !Sub arn:aws:iam::${AWS::AccountId}:instance-profile/ecsInstanceRole
+        NetworkInterfaces:
+          - AssociatePublicIpAddress: true
+            DeleteOnTermination: true
+            DeviceIndex: 0
+            Groups:
+              - !Ref EC2SecurityGroup
+            NetworkCardIndex: 0
+        ImageId: !Ref ECSAMI
+        InstanceType: t3.medium
+
+  EC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: sample-ecs-security-group
+      GroupName: sample-ecs-security-group
+      Tags:
+        - Key: Name
+          Value: sample-ecs-security-group
+      VpcId: '{{resolve:ssm:/ecs-bluegreen-deploy/VpcId}}'
+      SecurityGroupIngress:
+        - CidrIp: 0.0.0.0/0
+          IpProtocol: "-1"
+      SecurityGroupEgress:
+        - CidrIp: 0.0.0.0/0
+          IpProtocol: "-1"
+
+  # ---------------------------------------------------------------------------
+  # SSM Parameter
+  # ---------------------------------------------------------------------------  
+  ParameterECSClusterName:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /ecs-bluegreen-deploy/ECSClusterName
+      Type: String
+      Value: !Ref ECSCluster
+
+  ParameterECSServiceName:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /ecs-bluegreen-deploy/ECSServiceName
+      Type: String
+      Value: !GetAtt ECSService.Name
+
+  ParameterIAMRoleEcsTaskArn:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /ecs-bluegreen-deploy/IAMRoleEcsTaskArn
+      Type: String
+      Value: !GetAtt IAMRoleEcsTask.Arn
+
+  ParameterIAMRoleEcsTaskExecutionArn:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /ecs-bluegreen-deploy/IAMRoleEcsTaskExecutionArn
+      Type: String
+      Value: !GetAtt IAMRoleEcsTaskExecution.Arn

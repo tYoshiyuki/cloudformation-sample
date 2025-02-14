@@ -1,0 +1,152 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: ecs-bluegreen-deploy - 30_code_pipeline
+
+Resources:
+  # ---------------------------------------------------------------------------
+  # IAM Role
+  # ---------------------------------------------------------------------------  
+  IAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /service-role/
+      RoleName: SampleCodePipelineServiceRole
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - codepipeline.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      MaxSessionDuration: 3600
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AdministratorAccess
+
+  IAMRoleCodeDeploy:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      RoleName: SampleCodeDeployRole
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codedeploy.amazonaws.com
+            Action: sts:AssumeRole
+      MaxSessionDuration: 3600
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AdministratorAccess
+        - arn:aws:iam::aws:policy/service-role/AWSCodeDeployRole
+
+  # ---------------------------------------------------------------------------
+  # CodePipeline
+  # ---------------------------------------------------------------------------  
+  CodePipelinePipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: sample-code-pipeline
+      RoleArn: !GetAtt IAMRole.Arn
+      ArtifactStore:
+        Location: !Ref S3Bucket
+        Type: S3
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: Source
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: S3
+                Version: "1"
+              Configuration:
+                PollForSourceChanges: "true"
+                S3Bucket: !Ref S3Bucket
+                S3ObjectKey: config.zip
+              OutputArtifacts:
+                - Name: SourceArtifact
+              RunOrder: 1
+        - Name: Deploy
+          Actions:
+            - Name: Deploy
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CodeDeployToECS
+                Version: "1"
+              Configuration:
+                AppSpecTemplateArtifact: SourceArtifact
+                AppSpecTemplatePath: appspec.yaml
+                ApplicationName: !Ref CodeDeployApplication
+                DeploymentGroupName: sample-code-deploy-app-group-bg
+                TaskDefinitionTemplateArtifact: SourceArtifact
+                TaskDefinitionTemplatePath: task_definition.json
+              InputArtifacts:
+                - Name: SourceArtifact
+              RunOrder: 1
+
+  # ---------------------------------------------------------------------------
+  # CodeDeploy
+  # ---------------------------------------------------------------------------  
+  CodeDeployApplication:
+    Type: AWS::CodeDeploy::Application
+    Properties:
+      ApplicationName: sample-code-deploy-app
+      ComputePlatform: ECS
+
+  CodeDeployDeploymentGroup:
+    Type: AWS::CodeDeploy::DeploymentGroup
+    Properties:
+      ApplicationName: !Ref CodeDeployApplication
+      DeploymentGroupName: sample-code-deploy-app-group-bg
+      DeploymentConfigName: CodeDeployDefault.ECSAllAtOnce
+      ServiceRoleArn: !GetAtt IAMRoleCodeDeploy.Arn
+      DeploymentStyle:
+        DeploymentType: BLUE_GREEN
+        DeploymentOption: WITH_TRAFFIC_CONTROL
+      ECSServices:
+        - ClusterName: '{{resolve:ssm:/ecs-bluegreen-deploy/ECSClusterName}}'
+          ServiceName: '{{resolve:ssm:/ecs-bluegreen-deploy/ECSServiceName}}'
+      BlueGreenDeploymentConfiguration:
+        DeploymentReadyOption:
+          ActionOnTimeout: CONTINUE_DEPLOYMENT
+          WaitTimeInMinutes: 0
+        TerminateBlueInstancesOnDeploymentSuccess:
+          Action: TERMINATE
+          TerminationWaitTimeInMinutes: 3
+      LoadBalancerInfo:
+        TargetGroupPairInfoList:
+          - TargetGroups:
+              - Name: '{{resolve:ssm:/ecs-bluegreen-deploy/TargetGroupName}}'
+              - Name: '{{resolve:ssm:/ecs-bluegreen-deploy/TargetGroup2Name}}'
+            ProdTrafficRoute:
+              ListenerArns:
+                - '{{resolve:ssm:/ecs-bluegreen-deploy/ListenerArn}}'
+
+  # ---------------------------------------------------------------------------
+  # S3
+  # ---------------------------------------------------------------------------  
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Metadata:
+      Rain:
+        EmptyOnDelete: true
+    Properties:
+      BucketName: sample-ecs-s3
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+            BucketKeyEnabled: false
+      VersioningConfiguration:
+        Status: Enabled
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
