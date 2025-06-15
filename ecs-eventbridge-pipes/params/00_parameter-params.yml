@@ -1,0 +1,4 @@
+Parameters:
+  PublicSubnet1: subnet-xxx
+  PublicSubnet2: subnet-xxx
+  PublicSubnet3: subnet-xxx

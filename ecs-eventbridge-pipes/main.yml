@@ -1,0 +1,178 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: ecs-eventbridge-pipes
+
+Parameters:
+  PublicSubnet1:
+    Type: String
+
+  PublicSubnet2:
+    Type: String
+
+  PublicSubnet3:
+    Type: String
+
+  ECSClusterName:
+    Type: String
+    Default: eventbridge-pipes-cluster
+
+Resources:
+  DynamoDBTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: UserActions
+      AttributeDefinitions:
+        - AttributeName: userId
+          AttributeType: S
+        - AttributeName: createdAt
+          AttributeType: S
+      KeySchema:
+        - AttributeName: userId
+          KeyType: HASH
+        - AttributeName: createdAt
+          KeyType: RANGE
+      BillingMode: PAY_PER_REQUEST
+      StreamSpecification:
+        StreamViewType: NEW_IMAGE
+
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Ref ECSClusterName
+
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: PipesECSTaskExecutionRole
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  ECSTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: PipesECSTaskRole
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+
+  ECSTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: amazonlinux-task
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: "256"
+      Memory: "512"
+      NetworkMode: awsvpc
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt ECSTaskRole.Arn
+      ContainerDefinitions:
+        - Name: amazonlinux
+          Image: public.ecr.aws/amazonlinux/amazonlinux:2023
+          Command:
+            - echo
+            - done
+          Essential: true
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: /ecs/amazonlinux-task
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: amazonlinux
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /ecs/amazonlinux-task
+      RetentionInDays: 7
+
+  PipesRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: EventBridgePipeToECSRole
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: pipes.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: PipeECSPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ecs:RunTask
+                  - iam:PassRole
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - dynamodb:DescribeStream
+                  - dynamodb:GetRecords
+                  - dynamodb:GetShardIterator
+                  - dynamodb:ListStreams
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+
+  EventPipe:
+    Type: AWS::Pipes::Pipe
+    Properties:
+      Name: ddb-to-ecs-pipe
+      RoleArn: !GetAtt PipesRole.Arn
+      Source: !GetAtt DynamoDBTable.StreamArn
+      SourceParameters:
+        DynamoDBStreamParameters:
+          StartingPosition: LATEST
+        FilterCriteria:
+          Filters: []
+      Target: !Sub arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:cluster/${ECSClusterName}
+      TargetParameters:
+        EcsTaskParameters:
+          TaskDefinitionArn: !Ref ECSTaskDefinition
+          LaunchType: FARGATE
+          NetworkConfiguration:
+            AwsvpcConfiguration:
+              AssignPublicIp: ENABLED
+              Subnets:
+                - !Ref PublicSubnet1
+                - !Ref PublicSubnet2
+                - !Ref PublicSubnet3
+          TaskCount: 1
+          Overrides:
+            ContainerOverrides:
+              - Name: amazonlinux
+                Environment:
+                  - Name: USER_ID
+                    Value: $.dynamodb.NewImage.userId.S
+      LogConfiguration:
+        CloudwatchLogsLogDestination:
+          LogGroupArn: !GetAtt PipeLogGroup.Arn
+        Level: INFO
+        IncludeExecutionData:
+          - ALL
+
+  PipeLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/pipes/ddb-to-ecs-pipe
+      RetentionInDays: 7
