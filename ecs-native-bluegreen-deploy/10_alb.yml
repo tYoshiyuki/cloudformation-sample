@@ -1,0 +1,176 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: ecs-native-bluegreen-deploy - 10_alb
+
+Resources:
+  # ---------------------------------------------------------------------------
+  # SecurityGroup
+  # ---------------------------------------------------------------------------  
+  EC2SecurityGroup2:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: sample-ecs-native-bluegreen-lb-security-group
+      GroupName: sample-ecs-native-bluegreen-lb-security-group
+      Tags:
+        - Key: Name
+          Value: sample-ecs-native-bluegreen-lb-security-group
+      VpcId: '{{resolve:ssm:/ecs-native-bluegreen-deploy/VpcId}}'
+      SecurityGroupIngress:
+        - CidrIp: 0.0.0.0/0
+          FromPort: 80
+          IpProtocol: tcp
+          ToPort: 80
+      SecurityGroupEgress:
+        - CidrIp: 0.0.0.0/0
+          IpProtocol: "-1"
+
+  # ---------------------------------------------------------------------------
+  # ALB
+  # ---------------------------------------------------------------------------  
+  ElasticLoadBalancingV2LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: sample-ecs-native-bluegreen-lb
+      Scheme: internet-facing
+      Type: application
+      Subnets:
+        - '{{resolve:ssm:/ecs-native-bluegreen-deploy/PublicSubnet1}}'
+        - '{{resolve:ssm:/ecs-native-bluegreen-deploy/PublicSubnet2}}'
+        - '{{resolve:ssm:/ecs-native-bluegreen-deploy/PublicSubnet3}}'
+      SecurityGroups:
+        - !Ref EC2SecurityGroup2
+      IpAddressType: ipv4
+
+  # ---------------------------------------------------------------------------
+  # Listener・ListenerRule
+  # ---------------------------------------------------------------------------  
+  ElasticLoadBalancingV2Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ElasticLoadBalancingV2LoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - FixedResponseConfig:
+            MessageBody: ok
+            StatusCode: "200"
+            ContentType: text/plain
+          Order: 1
+          Type: fixed-response
+
+  ElasticLoadBalancingV2ListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      Priority: "1"
+      ListenerArn: !Ref ElasticLoadBalancingV2Listener
+      Conditions:
+        - Field: path-pattern
+          PathPatternConfig:
+            Values:
+              - '*'
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref ElasticLoadBalancingV2TargetGroup
+          Order: 1
+          ForwardConfig:
+            TargetGroups:
+              - TargetGroupArn: !Ref ElasticLoadBalancingV2TargetGroup
+                Weight: 100
+            TargetGroupStickinessConfig:
+              Enabled: false
+
+  ElasticLoadBalancingV2ListenerRuleTest:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      Priority: "2"
+      ListenerArn: !Ref ElasticLoadBalancingV2Listener
+      Conditions:
+        - Field: path-pattern
+          PathPatternConfig:
+            Values:
+              - '/test/*'
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref ElasticLoadBalancingV2TargetGroup2
+
+  # ---------------------------------------------------------------------------
+  # TargetGroup
+  # ---------------------------------------------------------------------------  
+  ElasticLoadBalancingV2TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 30
+      HealthCheckPath: /
+      Port: 80
+      Protocol: HTTP
+      HealthCheckPort: traffic-port
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 5
+      UnhealthyThresholdCount: 3
+      TargetType: ip
+      HealthyThresholdCount: 3
+      VpcId: '{{resolve:ssm:/ecs-native-bluegreen-deploy/VpcId}}'
+      Name: sample-ecs-native-bluegreen-lb-target-group
+      HealthCheckEnabled: true
+
+  ElasticLoadBalancingV2TargetGroup2:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 30
+      HealthCheckPath: /
+      Port: 80
+      Protocol: HTTP
+      HealthCheckPort: traffic-port
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 5
+      UnhealthyThresholdCount: 3
+      TargetType: ip
+      HealthyThresholdCount: 3
+      VpcId: '{{resolve:ssm:/ecs-native-bluegreen-deploy/VpcId}}'
+      Name: sample-ecs-native-bluegreen-lb-target-group-sub
+      HealthCheckEnabled: true
+
+  # ---------------------------------------------------------------------------
+  # SSM Parameter
+  # ---------------------------------------------------------------------------
+  ParameterListener:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /ecs-native-bluegreen-deploy/ListenerRuleArn
+      Type: String
+      Value: !GetAtt ElasticLoadBalancingV2ListenerRule.RuleArn
+
+  ParameterListenerRuleTestArn:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /ecs-native-bluegreen-deploy/ListenerRuleTestArn
+      Type: String
+      Value: !GetAtt ElasticLoadBalancingV2ListenerRuleTest.RuleArn
+
+  ParameterTargetGroupName:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /ecs-native-bluegreen-deploy/TargetGroupName
+      Type: String
+      Value: !GetAtt ElasticLoadBalancingV2TargetGroup.TargetGroupName
+
+  ParameterTargetGroupArn:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /ecs-native-bluegreen-deploy/TargetGroupArn
+      Type: String
+      Value: !Ref ElasticLoadBalancingV2TargetGroup
+
+  ParameterTargetGroup2Name:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /ecs-native-bluegreen-deploy/TargetGroup2Name
+      Type: String
+      Value: !GetAtt ElasticLoadBalancingV2TargetGroup2.TargetGroupName
+
+  ParameterTargetGroup2Arn:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /ecs-native-bluegreen-deploy/TargetGroup2Arn
+      Type: String
+      Value: !Ref ElasticLoadBalancingV2TargetGroup2

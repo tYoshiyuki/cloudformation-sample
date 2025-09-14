@@ -1,0 +1,5 @@
+Parameters:
+  VpcId: vpc-642d1d03
+  PublicSubnet1: subnet-fabe92a1
+  PublicSubnet2: subnet-3681451d
+  PublicSubnet3: subnet-3945b771

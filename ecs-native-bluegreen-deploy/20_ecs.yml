@@ -1,0 +1,159 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: ecs-native-bluegreen-deploy - 20_ecs
+
+Resources:
+  # ---------------------------------------------------------------------------
+  # IAM Role
+  # ---------------------------------------------------------------------------  
+  IAMRoleEcsTask:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      RoleName: SampleEcsNativeBlueGreenTaskRole
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      MaxSessionDuration: 3600
+      ManagedPolicyArns:
+        - !Ref IAMManagedPolicy
+
+  IAMManagedPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: sample-ecs-native-bluegreen-task-role-policy
+      Path: /
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Action:
+              - ssmmessages:CreateControlChannel
+              - ssmmessages:CreateDataChannel
+              - ssmmessages:OpenControlChannel
+              - ssmmessages:OpenDataChannel
+            Effect: Allow
+            Resource: '*'
+
+  IAMRoleEcsTaskExecution:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      RoleName: SampleEcsTaskExecutionRole
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      MaxSessionDuration: 3600
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  ECSServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: ecs-native-bluegreen-service-role
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceRole
+      Policies:
+        - PolicyName: 'ECSALBTrafficShiftPolicy'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'elasticloadbalancing:DescribeListeners'
+                  - 'elasticloadbalancing:DescribeListenerRules'
+                  - 'elasticloadbalancing:ModifyListener'
+                  - 'elasticloadbalancing:ModifyListenerRule'
+                  - 'elasticloadbalancing:DescribeTargetGroups'
+                  - 'elasticloadbalancing:RegisterTargets'
+                  - 'elasticloadbalancing:DeregisterTargets'
+                  - 'ec2:DescribeTags'
+                Resource: '*'
+
+  # ---------------------------------------------------------------------------
+  # ECS Cluster
+  # ---------------------------------------------------------------------------  
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: sample-ecs-native-bluegreen-cluster
+      CapacityProviders:
+        - FARGATE
+      DefaultCapacityProviderStrategy:
+        - CapacityProvider: FARGATE
+          Weight: 1
+
+  ECSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: '{{resolve:ssm:/ecs-native-bluegreen-deploy/VpcId}}'
+      GroupName: sample-ecs-native-bluegreen-security-group
+      GroupDescription: sample-ecs-native-bluegreen-security-group
+      SecurityGroupIngress:
+        - CidrIp: 0.0.0.0/0
+          IpProtocol: "-1"
+      SecurityGroupEgress:
+        - CidrIp: 0.0.0.0/0
+          IpProtocol: "-1"
+
+  ECSTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      ContainerDefinitions:
+        - Name: nginx
+          Image: nginx:1.14
+          PortMappings:
+            - ContainerPort: 80
+      Family: sample-ecs-native-bluegreen-task
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: 256
+      Memory: 512
+      NetworkMode: awsvpc
+      TaskRoleArn: !GetAtt IAMRoleEcsTask.Arn
+      ExecutionRoleArn: !Ref IAMRoleEcsTaskExecution
+
+  # ---------------------------------------------------------------------------
+  # ECS Service
+  # ---------------------------------------------------------------------------        
+  EcsService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: sample-ecs-native-bluegreen-service
+      Cluster: !GetAtt ECSCluster.Arn
+      TaskDefinition: !GetAtt ECSTaskDefinition.TaskDefinitionArn
+      LaunchType: FARGATE
+      DesiredCount: 1
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          Subnets:
+            - '{{resolve:ssm:/ecs-native-bluegreen-deploy/PublicSubnet1}}'
+            - '{{resolve:ssm:/ecs-native-bluegreen-deploy/PublicSubnet2}}'
+            - '{{resolve:ssm:/ecs-native-bluegreen-deploy/PublicSubnet3}}'
+          SecurityGroups:
+            - !Ref ECSSecurityGroup
+          AssignPublicIp: ENABLED
+      LoadBalancers:
+        - ContainerName: nginx
+          ContainerPort: 80
+          TargetGroupArn: '{{resolve:ssm:/ecs-native-bluegreen-deploy/TargetGroupArn}}'
+          AdvancedConfiguration:
+            AlternateTargetGroupArn: '{{resolve:ssm:/ecs-native-bluegreen-deploy/TargetGroup2Arn}}'
+            ProductionListenerRule: '{{resolve:ssm:/ecs-native-bluegreen-deploy/ListenerRuleArn}}'
+            TestListenerRule: '{{resolve:ssm:/ecs-native-bluegreen-deploy/ListenerRuleTestArn}}'
+            RoleArn: !GetAtt ECSServiceRole.Arn
+      DeploymentController:
+        Type: ECS
