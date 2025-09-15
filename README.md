@@ -11,3 +11,7 @@ CloudFormation の サンプル
 
 ### ecs-eventbridge-pipes
 - DynamoDB + EventBridge Pipes + ECS Task のサンプル
+
+### ecs-native-bluegreen-deploy
+- ECS on Fargate + ALB のサンプル
+    - ECS ネイティブ機能によるブルー・グリーンデプロイ構成
